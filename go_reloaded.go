@@ -5,19 +5,20 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
 const fichierEntree = "hello.txt"
 const fichierSortie = "output.txt"
 
-// commenceParVoyelle renvoie true si le mot commence par une voyelle (accents compris).
-func commenceParVoyelle(mot string) bool {
+// commenceParVoyelleOuH renvoie true si le mot commence par a, e, i, o, u ou h.
+func commenceParVoyelleOuH(mot string) bool {
 	if mot == "" {
 		return false
 	}
-	premiere, _ := utf8.DecodeRuneInString(strings.ToLower(mot))
-	return strings.ContainsRune("aeiouyàâäéèêëîïôöùûü", premiere)
+	premiere, _ := utf8.DecodeRuneInString(mot)
+	return strings.ContainsRune("aeiouh", unicode.ToLower(premiere))
 }
 
 // convertir transforme un nombre écrit dans une base (16 ou 2) en décimal.
@@ -40,33 +41,16 @@ func capitaliser(mot string) string {
 	return strings.ToUpper(string(premiere)) + strings.ToLower(mot[taille:])
 }
 
-func main() {
-
-	// Étape 1 : lire le fichier d'entrée
-	content, err := os.ReadFile(fichierEntree)
-	if err != nil {
-		fmt.Println("Erreur : impossible de lire", fichierEntree)
-		fmt.Println("Vérifie que le fichier existe bien dans le même dossier que main.go.")
-		os.Exit(1)
-	}
-
-	// Étape 2 : découper le texte en mots
-	words := strings.Fields(string(content))
-	if len(words) == 0 {
-		fmt.Println("Erreur :", fichierEntree, "est vide, il n'y a rien à transformer.")
-		os.Exit(1)
-	}
-
-	// Étape 3 : appliquer les règles (hex), (bin), (up), (low), (cap)
-	// Les marqueurs modifient le mot précédent et ne sont pas ajoutés au résultat.
+// appliquerMarqueurs gère (hex), (bin), (up), (low) et (cap).
+// Les marqueurs modifient le mot précédent et ne sont pas gardés dans le résultat.
+func appliquerMarqueurs(mots []string) []string {
 	var result []string
 
-	for _, mot := range words {
-		dernier := len(result) - 1 // position du mot précédent dans result
+	for _, mot := range mots {
+		dernier := len(result) - 1
 
 		switch mot {
 		case "(hex)", "(bin)", "(up)", "(low)", "(cap)":
-			// Pas de mot avant le marqueur : on l'ignore
 			if dernier < 0 {
 				fmt.Println("Attention :", mot, "est placé au début du texte, il est ignoré.")
 				continue
@@ -85,25 +69,122 @@ func main() {
 				result[dernier] = capitaliser(result[dernier])
 			}
 
-		// Mot normal : on l'ajoute tel quel
 		default:
 			result = append(result, mot)
 		}
 	}
+	return result
+}
 
-	// Étape 4 : transformer "a" en "an" devant une voyelle
-	for i := 0; i < len(result)-1; i++ {
-		if commenceParVoyelle(result[i+1]) {
-			if result[i] == "a" {
-				result[i] = "an"
-			} else if result[i] == "A" {
-				result[i] = "An"
+// collerApostrophes colle les ' autour des mots qu'ils entourent.
+// " ' awesome ' " devient "'awesome'".
+func collerApostrophes(mots []string) []string {
+	var result []string
+	ouvert := false          // true si on est entre deux '
+	collerAuSuivant := false // true si le prochain mot doit recevoir un ' devant
+
+	for _, mot := range mots {
+		if mot == "'" {
+			if !ouvert {
+				// Apostrophe ouvrante : elle sera collée au mot suivant
+				collerAuSuivant = true
+				ouvert = true
+			} else {
+				// Apostrophe fermante : on la colle au mot précédent
+				if len(result) > 0 {
+					result[len(result)-1] += "'"
+				} else {
+					result = append(result, "'")
+				}
+				ouvert = false
+			}
+			continue
+		}
+
+		if collerAuSuivant {
+			mot = "'" + mot
+			collerAuSuivant = false
+		}
+		result = append(result, mot)
+	}
+
+	// Cas d'une apostrophe ouvrante seule tout à la fin du texte
+	if collerAuSuivant {
+		result = append(result, "'")
+	}
+	return result
+}
+
+// collerPonctuation colle . , ! ? : ; au mot précédent.
+// "there ,and" devient "there, and" et "BAMM !!" devient "BAMM!!".
+// Les groupes comme ... ou !? restent ensemble.
+func collerPonctuation(mots []string) []string {
+	var result []string
+
+	for _, mot := range mots {
+		// On compte combien de signes de ponctuation il y a au début du mot
+		i := 0
+		for i < len(mot) && strings.ContainsRune(".,!?:;", rune(mot[i])) {
+			i++
+		}
+		ponctuation := mot[:i]
+		reste := mot[i:]
+
+		// La ponctuation est collée au mot précédent
+		if ponctuation != "" {
+			if len(result) > 0 {
+				result[len(result)-1] += ponctuation
+			} else {
+				result = append(result, ponctuation)
+			}
+		}
+
+		// Le reste du mot (s'il y en a) devient un mot séparé
+		if reste != "" {
+			result = append(result, reste)
+		}
+	}
+	return result
+}
+
+// transformerAEnAn remplace "a" par "an" si le mot suivant commence par une voyelle ou un h.
+func transformerAEnAn(mots []string) []string {
+	for i := 0; i < len(mots)-1; i++ {
+		if commenceParVoyelleOuH(mots[i+1]) {
+			if mots[i] == "a" {
+				mots[i] = "an"
+			} else if mots[i] == "A" {
+				mots[i] = "An"
 			}
 		}
 	}
+	return mots
+}
 
-	// Étape 5 : recoller les mots et écrire le résultat
-	// (output.txt est créé automatiquement s'il n'existe pas)
+func main() {
+
+	// Étape 1 : lire le fichier d'entrée
+	content, err := os.ReadFile(fichierEntree)
+	if err != nil {
+		fmt.Println("Erreur : impossible de lire", fichierEntree)
+		fmt.Println("Vérifie que le fichier existe bien dans le même dossier que main.go.")
+		os.Exit(1)
+	}
+
+	// Étape 2 : découper le texte en mots
+	words := strings.Fields(string(content))
+	if len(words) == 0 {
+		fmt.Println("Erreur :", fichierEntree, "est vide, il n'y a rien à transformer.")
+		os.Exit(1)
+	}
+
+	// Étape 3 : appliquer toutes les règles, dans l'ordre
+	result := appliquerMarqueurs(words)
+	result = collerApostrophes(result)
+	result = collerPonctuation(result)
+	result = transformerAEnAn(result)
+
+	// Étape 4 : recoller les mots et écrire le résultat
 	final := strings.Join(result, " ") + "\n"
 
 	err = os.WriteFile(fichierSortie, []byte(final), 0644)
@@ -113,4 +194,5 @@ func main() {
 	}
 
 	fmt.Print("Résultat : ", final)
+	fmt.Println("Fichier", fichierSortie, "créé avec succès !")
 }
